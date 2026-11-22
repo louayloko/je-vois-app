@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>DDS Zero-Loop • 0-9 | Contenant Pyramidal & Cybernétique</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background-color: #0b0d12; color: #e2e8f0; font-family: sans-serif; user-select: none; -webkit-tap-highlight-color: transparent; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .card-active { border-color: #eab308 !important; background: rgba(234, 179, 8, 0.14) !important; }
+    .seq-active { border-color: #10b981 !important; background: rgba(16, 185, 129, 0.14) !important; }
+    .step-active { border-color: #10b981 !important; background-color: rgba(16, 185, 129, 0.22) !important; color: #fff !important; }
+    @keyframes spiralPulse {
+      0%, 100% { transform: scale(0.88); opacity: 0.35; border-radius: 50%; }
+      25% { transform: scale(1.18); opacity: 0.9; border-radius: 42%; }
+      40% { transform: scale(0.95); opacity: 0.55; border-radius: 50%; }
+      55% { transform: scale(1.26); opacity: 0.95; border-radius: 38%; }
+      75% { transform: scale(0.90); opacity: 0.4; border-radius: 50%; }
+    }
+    .breathe-ring { animation: spiralPulse 10s infinite ease-in-out; animation-play-state: paused; pointer-events: none; }
+    .breathe-ring.running { animation-play-state: running; }
+    .btn-playing { background: linear-gradient(to bottom, #10b981, #059669) !important; color: #fff !important; box-shadow: 0 0 25px rgba(16,185,129,0.5) !important; }
+    .day-done { background: #059669 !important; border-color: #34d399 !important; color: #fff !important; }
+    .day-current { border-color: #eab308 !important; color: #fde047 !important; background: rgba(234,179,8,0.18) !important; }
+  </style>
+
+  <script>
+    var audioCtx = null, oscL = null, oscR = null, lfoB = null, lfoG = null, masterG = null, invG = null, fadeG = null;
+    var isoLfo = null, isoLfoG = null, isoG = null;
+    // Bords Terrestres (136.1 + 7.83 Hz) + Boucle Spirale (382ms)
+    var earthL = null, earthR = null, earthG = null;
+    var delayNode = null, fbGain = null, fbFilter = null, wetG = null;
+    // Contenant Pyramidal (Harmonique 2f + Résonateur court 24ms)
+    var oscHarmL = null, oscHarmR = null, harmG = null;
+    var chamberDelay = null, chamberFilter = null, chamberFb = null, chamberWet = null;
+
+    var isPlaying = false, currentMode = 'sequence', elapsed = 0, totalDur = 900, timerId = null, lastTick = 0;
+    var stopTimeoutId = null, wakeLock = null;
+    var lastL = null, lastR = null, lastB = null, lastInv = null, lastIso = null;
+    var S_KEY = 'bio_dds_21d_v7_0369';
+    var W_CURVE = [1000,1930,3727,7196,13894,26826,51794,100000,193069,372759,719685,1389495,2682695,5179474,10000000,19306977,37275937,71968567,138949549,268269579,517947467,1000000000];
+    var qState = { cycle: 0, lastDate: null, todayCount: 0, overdose: false };
+
+    // Architecture 0 + 9 = 10 Stations (900s = 15:00)
+    var seqSteps = [
+      { s: 0,   e: 30,  c: 136.10,  b: 0.00,  inv: true,  r: 0, lbl: "Phase 0 • Point Zéro : Foyer d'Impulsion (136.10 Hz | Φ=180°)", st: "Phase 0/9" },
+      { s: 30,  e: 120, c: 727.50,  b: 3.92,  inv: true,  r: 1, lbl: "Phase 1 • Purge Beck (727.5 + 3.92 Hz | Φ=180°)", st: "Phase 1/9" },
+      { s: 120, e: 210, c: 727.50,  b: 15.20, inv: true,  r: 2, lbl: "Phase 2 • Drainage CAFL (727.5 + 15.2 Hz | Φ=180°)", st: "Phase 2/9" },
+      { s: 210, e: 255, c: 126.22,  b: 7.83,  inv: false, r: 3, lbl: "Phase 3A • Porte 3 : Fenêtre Ca2+ (126.22 + 7.83 Hz)", st: "Phase 3/9" },
+      { s: 255, e: 300, c: 126.22,  b: 10.00, inv: false, r: 3, lbl: "Phase 3B • Porte 3 : Axe Schmidt (126.22 + 10.00 Hz)", st: "Phase 3/9" },
+      { s: 300, e: 390, c: 317.83,  b: 10.00, inv: false, r: 4, lbl: "Phase 4 • Souveraineté & Foie (317.83 + 10.00 Hz)", st: "Phase 4/9" },
+      { s: 390, e: 435, c: 480.00,  b: 8.00,  inv: false, r: 5, lbl: "Phase 5A • Pinéale Palier 1 (480 + 8.00 Hz)", st: "Phase 5/9" },
+      { s: 435, e: 480, c: 662.00,  b: 8.00,  inv: false, r: 5, lbl: "Phase 5B • Pinéale Palier 2 (662 + 8.00 Hz)", st: "Phase 5/9" },
+      { s: 480, e: 570, c: 936.00,  b: 8.00,  inv: false, r: 6, lbl: "Phase 6 • Porte 6 : Pinéale Sommet (936 + 8.00 Hz)", st: "Phase 6/9" },
+      { s: 570, e: 615, c: 316.00,  b: 7.83,  inv: false, r: 7, lbl: "Phase 7A • Témoin Or Octave (316 + 7.83 Hz)", st: "Phase 7/9" },
+      { s: 615, e: 660, c: 1729.00, b: 7.83,  inv: false, r: 7, lbl: "Phase 7B • Résonance Or 197Au (1729 + 7.83 Hz)", st: "Phase 7/9" },
+      { s: 660, e: 750, c: 183.58,  b: 10.00, inv: false, r: 8, lbl: "Phase 8 • Expansion Jupiter (183.58 + 10.00 Hz)", st: "Phase 8/9" },
+      { s: 750, e: 810, c: 183.58,  b: 40.00, inv: false, r: 9, lbl: "Phase 9A • Verrouillage Gamma (183.58 + 40 Hz)", st: "Phase 9/9" },
+      { s: 810, e: 870, c: 136.10,  b: 7.83,  inv: false, r: 9, lbl: "Phase 9B • Ancrage Terre / Malkuth (136.10 + 7.83 Hz)", st: "Phase 9/9" },
+      { s: 870, e: 900, c: 136.10,  b: 0.00,  inv: true,  r: 9, lbl: "Phase 9C • Ouverture Spirale / Point Zéro (136.10 Hz)", st: "Phase 9/9" }
+    ];
+
+    var presets = {
+      '10hz':  { c: 317.83, b: 10.00, lbl: "Souveraineté & Foie (317.83 + 10 Hz)" },
+      '8hz':   { c: 126.22, b: 7.83,  lbl: "Fenêtre Biologique (126.22 + 7.83 Hz)" },
+      '40hz':  { c: 183.58, b: 40.00, lbl: "Jupiter + Gamma (183.58 + 40 Hz)" },
+      'venus': { c: 221.23, b: 10.00, lbl: "Attraction Magnétique (221.23 + 10 Hz)" }
+    };
+
+    function getTarget() {
+      if (currentMode === 'sequence') {
+        var st = seqSteps[seqSteps.length - 1];
+        for (var i = 0; i < seqSteps.length; i++) {
+          if (elapsed >= seqSteps[i].s && elapsed < seqSteps[i].e) { st = seqSteps[i]; break; }
+        }
+        return { l: st.c, r: +(st.c + st.b).toFixed(2), b: st.b, inv: st.inv, row: st.r, lbl: st.lbl, idx: st.st };
+      }
+      var p = presets[currentMode];
+      if (elapsed < 30) {
+        return { l: p.c, r: p.c, b: 0.00, inv: true, row: -1, lbl: "Phase 0 (30s) • Point Zéro : " + p.c + " Hz | Φ=180°", idx: "Phase 0 (Zéro)" };
+      }
+      return { l: p.c, r: +(p.c + p.b).toFixed(2), b: p.b, inv: false, row: -1, lbl: "Continu : " + p.lbl, idx: "Actif (Φ=0°)" };
+    }
+
+    function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator && !wakeLock) {
+          navigator.wakeLock.request('screen').then(function(wl) {
+            wakeLock = wl;
+            wakeLock.addEventListener('release', function() { wakeLock = null; });
+          }).catch(function(){});
+        }
+      } catch(e) {}
+    }
+
+    function releaseWakeLock() {
+      try {
+        if (wakeLock) {
+          wakeLock.release().catch(function(){});
+          wakeLock = null;
+        }
+      } catch(e) {}
+    }
+
+    document.addEventListener('visibilitychange', function() {
+      if (document.visibilityState === 'visible' && isPlaying) requestWakeLock();
+    });
+
+    function toggleAudio() {
+      if (!isPlaying) {
+        isPlaying = true;
+        document.getElementById('playIcon').innerText = '⏸';
+        document.getElementById('playText').innerText = 'PAUSE';
+        document.getElementById('playBtn').classList.add('btn-playing');
+        document.getElementById('breatheRing').classList.add('running');
+        document.getElementById('statusDot').className = "w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping";
+
+        requestWakeLock();
+        lastTick = Date.now();
+        if (timerId) clearInterval(timerId);
+        timerId = setInterval(function() {
+          var nowMs = Date.now();
+          var dt = (nowMs - lastTick) / 1000;
+          if (dt >= 1) {
+            var inc = Math.floor(dt);
+            elapsed += inc;
+            lastTick += inc * 1000;
+            if (currentMode === 'sequence' && elapsed >= totalDur) {
+              stopAudio();
+              elapsed = 0;
+              syncUI();
+              validateSession(false);
+              return;
+            }
+            syncUI();
+          }
+        }, 250);
+
+        startSound();
+        syncUI();
+      } else {
+        stopAudio();
+      }
+    }
+
+    function stopAudio() {
+      isPlaying = false;
+      if (timerId) { clearInterval(timerId); timerId = null; }
+      releaseWakeLock();
+
+      if (fadeG && audioCtx) {
+        try {
+          var now = audioCtx.currentTime;
+          fadeG.gain.cancelScheduledValues(now);
+          fadeG.gain.setValueAtTime(fadeG.gain.value, now);
+          fadeG.gain.linearRampToValueAtTime(0.0, now + 0.15);
+          if (stopTimeoutId) clearTimeout(stopTimeoutId);
+          stopTimeoutId = setTimeout(killOsc, 180);
+        } catch(e) { killOsc(); }
+      } else {
+        killOsc();
+      }
+
+      document.getElementById('playIcon').innerText = '▶';
+      document.getElementById('playText').innerText = 'ACTIVER';
+      document.getElementById('playBtn').classList.remove('btn-playing');
+      document.getElementById('breatheRing').classList.remove('running');
+      document.getElementById('statusDot').className = "w-2.5 h-2.5 rounded-full bg-amber-500";
+    }
+
+    function killOsc() {
+      if (stopTimeoutId) { clearTimeout(stopTimeoutId); stopTimeoutId = null; }
+      var nodes = [oscL, oscR, lfoB, isoLfo, earthL, earthR, oscHarmL, oscHarmR];
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i]) { try { nodes[i].stop(); nodes[i].disconnect(); } catch(e){} }
+      }
+      var gains = [lfoG, isoLfoG, isoG, invG, masterG, fadeG, earthG, delayNode, fbGain, fbFilter, wetG, harmG, chamberDelay, chamberFilter, chamberFb, chamberWet];
+      for (var j = 0; j < gains.length; j++) {
+        if (gains[j]) { try { gains[j].disconnect(); } catch(e){} }
+      }
+      oscL = oscR = lfoB = lfoG = isoLfo = isoLfoG = isoG = invG = masterG = fadeG = null;
+      earthL = earthR = earthG = delayNode = fbGain = fbFilter = wetG = null;
+      oscHarmL = oscHarmR = harmG = chamberDelay = chamberFilter = chamberFb = chamberWet = null;
+      lastL = null; lastR = null; lastB = null; lastInv = null; lastIso = null;
+    }
+
+    function createCardiacWave(ctx) {
+      var real = new Float32Array([0, 0.7, 0.35, 0.18, 0.08, 0.04]);
+      var imag = new Float32Array([0, 0,   0,    0,    0,    0]);
+      return ctx.createPeriodicWave(real, imag);
+    }
+
+    function startSound() {
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!audioCtx) audioCtx = new AC();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        killOsc();
+
+        var now = audioCtx.currentTime;
+        var vol = document.getElementById('volSlider').value / 100;
+        var isIso = document.getElementById('isoToggle').checked;
+        var earthOn = document.getElementById('earthToggle').checked;
+        var spiralOn = document.getElementById('spiralToggle').checked;
+        var chamberOn = document.getElementById('chamberToggle').checked;
+
+        masterG = audioCtx.createGain();
+        masterG.gain.setValueAtTime(vol * 0.5, now);
+
+        fadeG = audioCtx.createGain();
+        fadeG.gain.setValueAtTime(0.0, now);
+        fadeG.gain.linearRampToValueAtTime(1.0, now + 0.15);
+
+        // 1. CŒUR PYRAMIDAL (Fréquences internes 0 -> 9)
+        var merger = audioCtx.createChannelMerger(2);
+        oscL = audioCtx.createOscillator();
+        oscR = audioCtx.createOscillator();
+        var wType = document.getElementById('harmonicToggle').checked ? 'triangle' : 'sine';
+        oscL.type = wType; oscR.type = wType;
+
+        invG = audioCtx.createGain();
+        var t = getTarget();
+        var targetR = isIso ? t.l : t.r;
+        var targetInv = isIso ? 1.0 : (t.inv ? -1.0 : 1.0);
+
+        oscL.frequency.setValueAtTime(Math.max(20, t.l), now);
+        oscR.frequency.setValueAtTime(Math.max(20, targetR), now);
+        invG.gain.setValueAtTime(targetInv, now);
+
+        isoG = audioCtx.createGain();
+        var isoActive = isIso && t.b > 0;
+        isoG.gain.setValueAtTime(isoActive ? 0.55 : 1.0, now);
+
+        isoLfo = audioCtx.createOscillator();
+        isoLfo.type = 'sine';
+        isoLfo.frequency.setValueAtTime(Math.max(0.1, t.b), now);
+        isoLfoG = audioCtx.createGain();
+        isoLfoG.gain.setValueAtTime(isoActive ? 0.45 : 0.0, now);
+
+        isoLfo.connect(isoLfoG);
+        isoLfoG.connect(isoG.gain);
+
+        lastL = t.l; lastR = t.r; lastB = t.b; lastInv = t.inv; lastIso = isIso;
+
+        oscL.connect(merger, 0, 0);
+        oscR.connect(invG);
+        invG.connect(merger, 0, 1);
+        merger.connect(isoG);
+        isoG.connect(masterG);
+
+        // 2. CONTENANT ACOUSTIQUE / RÉSONANCE PYRAMIDE (Harmonique 2f + Cavité résonante 24ms)
+        var harmMerger = audioCtx.createChannelMerger(2);
+        oscHarmL = audioCtx.createOscillator();
+        oscHarmR = audioCtx.createOscillator();
+        oscHarmL.type = 'sine';
+        oscHarmR.type = 'sine';
+        oscHarmL.frequency.setValueAtTime(Math.max(40, t.l * 2.0), now);
+        oscHarmR.frequency.setValueAtTime(Math.max(40, targetR * 2.0), now);
+
+        harmG = audioCtx.createGain();
+        harmG.gain.setValueAtTime(chamberOn ? 0.14 : 0.0, now);
+
+        oscHarmL.connect(harmMerger, 0, 0);
+        oscHarmR.connect(harmMerger, 0, 1);
+        harmMerger.connect(harmG);
+        harmG.connect(masterG);
+
+        // Résonateur court de cavité (24ms + Bandpass centré à 520 Hz)
+        chamberDelay = audioCtx.createDelay(0.2);
+        chamberDelay.delayTime.setValueAtTime(0.024, now);
+        chamberFilter = audioCtx.createBiquadFilter();
+        chamberFilter.type = 'bandpass';
+        chamberFilter.frequency.setValueAtTime(520, now);
+        chamberFilter.Q.setValueAtTime(1.8, now);
+
+        chamberFb = audioCtx.createGain();
+        chamberFb.gain.setValueAtTime(chamberOn ? 0.35 : 0.0, now);
+
+        chamberWet = audioCtx.createGain();
+        chamberWet.gain.setValueAtTime(chamberOn ? 0.25 : 0.0, now);
+
+        isoG.connect(chamberDelay);
+        chamberDelay.connect(chamberFilter);
+        chamberFilter.connect(chamberFb);
+        chamberFb.connect(chamberDelay);
+        chamberFilter.connect(chamberWet);
+        chamberWet.connect(masterG);
+
+        // 3. BORDS TERRESTRES CONTINUS (136.10 Hz Gauche / 143.93 Hz Droite -> Beat 7.83 Hz Schumann)
+        var earthMerger = audioCtx.createChannelMerger(2);
+        earthL = audioCtx.createOscillator();
+        earthR = audioCtx.createOscillator();
+        earthL.type = 'sine';
+        earthR.type = 'sine';
+        earthL.frequency.setValueAtTime(136.10, now);
+        earthR.frequency.setValueAtTime(isIso ? 136.10 : 143.93, now);
+
+        earthG = audioCtx.createGain();
+        earthG.gain.setValueAtTime(earthOn ? 0.22 : 0.0, now);
+
+        earthL.connect(earthMerger, 0, 0);
+        earthR.connect(earthMerger, 0, 1);
+        earthMerger.connect(earthG);
+        earthG.connect(masterG);
+
+        // 4. IMPULSION CARDIAQUE ORTHOGONALE (0.10 Hz — Vertical/Horizontal)
+        lfoB = audioCtx.createOscillator();
+        lfoB.setPeriodicWave(createCardiacWave(audioCtx));
+        lfoB.frequency.setValueAtTime(0.10, now);
+        lfoG = audioCtx.createGain();
+        lfoG.gain.setValueAtTime(document.getElementById('breathToggle').checked ? (vol * 0.14) : 0, now);
+
+        lfoB.connect(lfoG);
+        lfoG.connect(masterG.gain);
+
+        // 5. BOUCLE DE RÉSONANCE SPIRALE ∞ (Feedback Delay 382ms filtré)
+        delayNode = audioCtx.createDelay(1.0);
+        delayNode.delayTime.setValueAtTime(0.382, now);
+        fbFilter = audioCtx.createBiquadFilter();
+        fbFilter.type = 'lowpass';
+        fbFilter.frequency.setValueAtTime(1200, now);
+
+        fbGain = audioCtx.createGain();
+        fbGain.gain.setValueAtTime(spiralOn ? 0.42 : 0.0, now);
+
+        wetG = audioCtx.createGain();
+        wetG.gain.setValueAtTime(spiralOn ? 0.28 : 0.0, now);
+
+        masterG.connect(fadeG);
+        masterG.connect(delayNode);
+        delayNode.connect(fbFilter);
+        fbFilter.connect(fbGain);
+        fbGain.connect(delayNode);
+        fbFilter.connect(wetG);
+        wetG.connect(fadeG);
+
+        fadeG.connect(audioCtx.destination);
+
+        oscL.start(now); oscR.start(now);
+        oscHarmL.start(now); oscHarmR.start(now);
+        earthL.start(now); earthR.start(now);
+        lfoB.start(now); isoLfo.start(now);
+      } catch(e) {}
+    }
+
+    function syncUI() {
+      var t = getTarget();
+      var isIso = document.getElementById('isoToggle').checked;
+
+      document.getElementById('freqDisplay').innerText = (isIso || t.b === 0)
+        ? (t.l.toFixed(2) + (t.b === 0 ? ' Hz (Zéro)' : ' Hz (Iso)'))
+        : (t.l.toFixed(2) + ' / ' + t.r.toFixed(2) + ' Hz');
+      document.getElementById('beatDisplay').innerText = t.b.toFixed(2) + ' Hz';
+      document.getElementById('seqStepName').innerText = t.lbl;
+      document.getElementById('seqStepIndex').innerText = t.idx;
+
+      var pb = document.getElementById('phaseBadge');
+      if (isIso) {
+        pb.innerText = t.b === 0 ? "🔊 Enceinte (Point Zéro)" : "🔊 Enceinte (Isochrone)";
+        pb.className = "text-[11px] mono bg-amber-950/80 text-amber-300 border border-amber-700/60 px-2.5 py-1 rounded-full";
+      } else if (t.inv && t.b === 0) {
+        pb.innerText = "Φ = 180° (Point Zéro)";
+        pb.className = "text-[11px] mono bg-indigo-950/80 text-indigo-300 border border-indigo-600/60 px-2.5 py-1 rounded-full";
+      } else if (t.inv) {
+        pb.innerText = "Φ = 180° (Purge)";
+        pb.className = "text-[11px] mono bg-rose-950/80 text-rose-300 border border-rose-700/60 px-2.5 py-1 rounded-full";
+      } else {
+        pb.innerText = "Φ = 0° (Contenant Actif)";
+        pb.className = "text-[11px] mono bg-teal-950/70 text-teal-300 border border-teal-800/60 px-2.5 py-1 rounded-full";
+      }
+
+      for (var i = 0; i <= 9; i++) {
+        var rEl = document.getElementById('step-row-' + i);
+        if (rEl) {
+          if (currentMode === 'sequence' && t.row === i) rEl.classList.add('step-active');
+          else rEl.classList.remove('step-active');
+        }
+      }
+
+      if (currentMode === 'sequence') {
+        var rem = Math.max(0, totalDur - elapsed);
+        var m = String(Math.floor(rem / 60)); if (m.length < 2) m = '0' + m;
+        var s = String(rem % 60); if (s.length < 2) s = '0' + s;
+        document.getElementById('timerDisplay').innerText = m + ':' + s;
+        document.getElementById('seqProgressBar').style.width = Math.min(100, (elapsed / totalDur) * 100) + '%';
+      } else {
+        var m2 = String(Math.floor(elapsed / 60)); if (m2.length < 2) m2 = '0' + m2;
+        var s2 = String(elapsed % 60); if (s2.length < 2) s2 = '0' + s2;
+        document.getElementById('timerDisplay').innerText = m2 + ':' + s2;
+        document.getElementById('seqProgressBar').style.width = elapsed < 30 ? ((elapsed / 30) * 100) + '%' : '100%';
+      }
+
+      if (isPlaying && oscL && oscR && audioCtx) {
+        if (t.l !== lastL || t.r !== lastR || t.b !== lastB || t.inv !== lastInv || isIso !== lastIso) {
+          try {
+            var now = audioCtx.currentTime;
+            var ramp = (isIso !== lastIso && t.l === lastL) ? 0.3 : 1.5;
+            var targetR = isIso ? t.l : t.r;
+            var targetInv = isIso ? 1.0 : (t.inv ? -1.0 : 1.0);
+            var isoActive = isIso && t.b > 0;
+
+            oscL.frequency.cancelScheduledValues(now);
+            oscL.frequency.setValueAtTime(oscL.frequency.value, now);
+            oscL.frequency.linearRampToValueAtTime(Math.max(20, t.l), now + ramp);
+
+            oscR.frequency.cancelScheduledValues(now);
+            oscR.frequency.setValueAtTime(oscR.frequency.value, now);
+            oscR.frequency.linearRampToValueAtTime(Math.max(20, targetR), now + ramp);
+
+            if (oscHarmL && oscHarmR) {
+              oscHarmL.frequency.cancelScheduledValues(now);
+              oscHarmL.frequency.setValueAtTime(oscHarmL.frequency.value, now);
+              oscHarmL.frequency.linearRampToValueAtTime(Math.max(40, t.l * 2.0), now + ramp);
+
+              oscHarmR.frequency.cancelScheduledValues(now);
+              oscHarmR.frequency.setValueAtTime(oscHarmR.frequency.value, now);
+              oscHarmR.frequency.linearRampToValueAtTime(Math.max(40, targetR * 2.0), now + ramp);
+            }
+
+            if (earthR) {
+              earthR.frequency.setTargetAtTime(isIso ? 136.10 : 143.93, now, 0.1);
+            }
+
+            if (invG) {
+              invG.gain.cancelScheduledValues(now);
+              invG.gain.setValueAtTime(invG.gain.value, now);
+              invG.gain.linearRampToValueAtTime(targetInv, now + 0.25);
+            }
+
+            if (isoLfo) {
+              isoLfo.frequency.cancelScheduledValues(now);
+              isoLfo.frequency.setValueAtTime(isoLfo.frequency.value, now);
+              isoLfo.frequency.linearRampToValueAtTime(Math.max(0.1, t.b), now + ramp);
+            }
+
+            if (isoG && isoLfoG) {
+              isoG.gain.cancelScheduledValues(now);
+              isoG.gain.setValueAtTime(isoG.gain.value, now);
+              isoG.gain.linearRampToValueAtTime(isoActive ? 0.55 : 1.0, now + 0.25);
+
+              isoLfoG.gain.cancelScheduledValues(now);
+              isoLfoG.gain.setValueAtTime(isoLfoG.gain.value, now);
+              isoLfoG.gain.linearRampToValueAtTime(isoActive ? 0.45 : 0.0, now + 0.25);
+            }
+
+            lastL = t.l; lastR = t.r; lastB = t.b; lastInv = t.inv; lastIso = isIso;
+          } catch(e){}
+        }
+      }
+    }
+
+    function jumpTo(ev, sec) {
+      if (ev) ev.stopPropagation();
+      if (currentMode !== 'sequence') selectMode('sequence');
+      elapsed = sec;
+      lastTick = Date.now();
+      syncUI();
+      if (!isPlaying) toggleAudio();
+    }
+
+    function selectMode(m) {
+      currentMode = m; elapsed = 0; lastTick = Date.now();
+      document.getElementById('card-seq').className = "cursor-pointer bg-[#141822] border-2 border-gray-800 rounded-2xl p-4 transition";
+      var list = ['10', '8', '40', 'venus'];
+      for (var i = 0; i < list.length; i++) {
+        document.getElementById('card-' + list[i]).className = "cursor-pointer bg-[#141822] border border-gray-800 rounded-2xl p-3 transition";
+      }
+      if (m === 'sequence') {
+        document.getElementById('card-seq').classList.add('seq-active');
+        renderQuest();
+      } else {
+        document.getElementById('card-' + m.replace('hz','')).classList.add('card-active');
+        if (m === 'venus') {
+          if (qState.todayCount === 0 && qState.cycle === 0) {
+            renderQuest("⚠️ Dissonance de Terrain : Purge (Master Sweep) requise avant d'activer Vénus !");
+          } else {
+            renderQuest("🧲 Résonance Sympathique active : Terrain purgé, attraction Vénus optimale !");
+          }
+        } else {
+          renderQuest();
+        }
+      }
+      syncUI();
+    }
+
+    function updateVolume(v) {
+      document.getElementById('volLabel').innerText = v <= 25 ? v + '% (Optimal)' : v + '%';
+      if (masterG && audioCtx) {
+        masterG.gain.setTargetAtTime((v / 100) * 0.5, audioCtx.currentTime, 0.03);
+      }
+      updateBreath();
+    }
+
+    function updateBreath() {
+      var on = document.getElementById('breathToggle').checked;
+      var v = document.getElementById('volSlider').value / 100;
+      if (lfoG && audioCtx) {
+        lfoG.gain.setTargetAtTime(on ? (v * 0.14) : 0, audioCtx.currentTime, 0.05);
+      }
+    }
+
+    function updateChamber() {
+      var on = document.getElementById('chamberToggle').checked;
+      if (harmG && chamberFb && chamberWet && audioCtx) {
+        harmG.gain.setTargetAtTime(on ? 0.14 : 0.0, audioCtx.currentTime, 0.1);
+        chamberFb.gain.setTargetAtTime(on ? 0.35 : 0.0, audioCtx.currentTime, 0.1);
+        chamberWet.gain.setTargetAtTime(on ? 0.25 : 0.0, audioCtx.currentTime, 0.1);
+      }
+    }
+
+    function updateEarth() {
+      var on = document.getElementById('earthToggle').checked;
+      if (earthG && audioCtx) {
+        earthG.gain.setTargetAtTime(on ? 0.22 : 0.0, audioCtx.currentTime, 0.1);
+      }
+    }
+
+    function updateSpiral() {
+      var on = document.getElementById('spiralToggle').checked;
+      if (fbGain && wetG && audioCtx) {
+        fbGain.gain.setTargetAtTime(on ? 0.42 : 0.0, audioCtx.currentTime, 0.1);
+        wetG.gain.setTargetAtTime(on ? 0.28 : 0.0, audioCtx.currentTime, 0.1);
+      }
+    }
+
+    function updateWave() {
+      if (oscL && oscR) {
+        var w = document.getElementById('harmonicToggle').checked ? 'triangle' : 'sine';
+        oscL.type = w; oscR.type = w;
+      }
+      renderQuest();
+    }
+
+    function updateIso() {
+      syncUI();
+    }
+
+    function todayStr() {
+      var d = new Date();
+      var m = String(d.getMonth() + 1); if (m.length < 2) m = '0' + m;
+      var day = String(d.getDate()); if (day.length < 2) day = '0' + day;
+      return d.getFullYear() + '-' + m + '-' + day;
+    }
+
+    function daysDiff(d1, d2) {
+      if (!d1 || !d2) return 0;
+      var a = new Date(d1 + 'T00:00:00');
+      var b = new Date(d2 + 'T00:00:00');
+      return Math.round((b - a) / 86400000);
+    }
+
+    function loadQuest() {
+      try {
+        var s = localStorage.getItem(S_KEY);
+        if (s) qState = JSON.parse(s);
+      } catch(e){}
+
+      var td = todayStr();
+      var entropyMsg = null;
+      if (qState.lastDate && qState.lastDate !== td) {
+        var diff = daysDiff(qState.lastDate, td);
+        if (diff > 1 && qState.cycle < 21) {
+          var lost = diff - 1;
+          qState.cycle = Math.max(0, qState.cycle - lost);
+          entropyMsg = "⚠️ Entropie cellulaire : " + lost + " jour(s) manqué(s) (-" + lost + " cycle).";
+        }
+        qState.todayCount = 0;
+        qState.overdose = false;
+        saveQuest();
+      }
+      renderQuest(entropyMsg);
+    }
+
+    function saveQuest() {
+      try { localStorage.setItem(S_KEY, JSON.stringify(qState)); } catch(e){}
+    }
+
+    function validateSession(sim) {
+      var td = todayStr();
+      if (sim) {
+        qState.todayCount = 1; qState.overdose = false;
+        if (qState.cycle < 21) qState.cycle++;
+        qState.lastDate = td;
+        saveQuest();
+        renderQuest("✨ Cycle " + qState.cycle + "/21 validé (Simulation Circadienne) !");
+        return;
+      }
+      if (qState.lastDate !== td) { qState.todayCount = 0; qState.overdose = false; }
+      qState.todayCount++;
+      if (qState.todayCount === 1) {
+        if (qState.cycle < 21) qState.cycle++;
+        qState.lastDate = td; saveQuest();
+        renderQuest("🎯 Spirale 0→9 accomplie (Cycle " + qState.cycle + "/21) ! Pont d'Action : exécute maintenant 1 tâche concrète dans les 60 prochaines minutes.");
+      } else if (qState.todayCount === 2) {
+        qState.lastDate = td; saveQuest();
+        renderQuest("🌙 Séance 2/2 : Spirale ancrée à 100%. Pont d'Action : ancre ta clarté puis repos nocturne requis.");
+      } else {
+        qState.overdose = true; qState.lastDate = td; saveQuest();
+        renderQuest("⚠️ SATURATION ARNDT-SCHULZ : Max 2 séances/jour ! Passe à l'action dans le réel.");
+      }
+    }
+
+    function resetQuest() {
+      qState = { cycle: 0, lastDate: null, todayCount: 0, overdose: false };
+      saveQuest();
+      renderQuest("🔄 Quête réinitialisée à 0/21 (1 000 €).");
+    }
+
+    function fmtEuro(n) {
+      return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " €";
+    }
+
+    function renderQuest(msg) {
+      var c = qState.cycle;
+      var base = W_CURVE[c] || 1000;
+      var hEl = document.getElementById('harmonicToggle');
+      var vBonus = (currentMode === 'venus' && (qState.todayCount > 0 || c > 0)) ? 1.10 : 1.0;
+      var mult = ((hEl && hEl.checked && c > 0 && c < 21) ? 1.15 : 1.0) * vBonus;
+      var w = c === 21 ? 1000000000 : base * mult;
+
+      document.getElementById('wealthDisplay').innerText = fmtEuro(w);
+      document.getElementById('cycleCountDisplay').innerText = "Cycle " + c + " / 21";
+      document.getElementById('dailyDoseDisplay').innerText = "Séances du jour : " + qState.todayCount + "/2";
+
+      var pEl = document.getElementById('phaseTitleDisplay');
+      if (c === 0) pEl.innerText = "En attente du 1er Cycle d'ouverture";
+      else if (c <= 7) pEl.innerText = "J1-7 : Phase de Déprogrammation (Purge & Schumann)";
+      else if (c <= 14) pEl.innerText = "J8-14 : Phase de Syntonisation (Foie, Pinéale & Or)";
+      else if (c < 21) pEl.innerText = "J15-21 : Phase de Cristallisation (Gamma & Malkuth)";
+      else pEl.innerText = "🏆 ENGRAMME PERMANENT : 1 MILLIARD DÉVERROUILLÉ";
+
+      var banner = document.getElementById('bioRuleBanner');
+      var bTxt = document.getElementById('bioRuleText');
+
+      if (qState.overdose) {
+        banner.className = "mt-3 px-3 py-2 rounded-xl border border-rose-700/80 bg-rose-950/60 text-[11px] text-rose-200";
+        bTxt.innerText = msg || "⚠️ Saturation Membranaire (Arndt-Schulz) : Repos nocturne requis.";
+      } else if (msg) {
+        banner.className = "mt-3 px-3 py-2 rounded-xl border border-amber-600/60 bg-amber-950/40 text-[11px] text-amber-200";
+        bTxt.innerText = msg;
+      } else if (c === 21) {
+        banner.className = "mt-3 px-3 py-2 rounded-xl border border-emerald-500/80 bg-emerald-950/50 text-[11px] text-emerald-200";
+        bTxt.innerText = "👑 Objectif 1 000 000 000 € atteint ! Engramme permanent.";
+      } else if (qState.todayCount >= 1) {
+        banner.className = "mt-3 px-3 py-2 rounded-xl border border-teal-700/60 bg-teal-950/40 text-[11px] text-teal-200";
+        bTxt.innerText = "🌙 Cycle du jour validé. Terrain purgé (Attraction Vénus disponible).";
+      } else {
+        banner.className = "mt-3 px-3 py-2 rounded-xl border border-teal-800/50 bg-teal-950/30 text-[11px] text-teal-200";
+        bTxt.innerText = "🟢 Terrain prêt : 1 écoute complète (15m • Spirale 0→9) = +1 Cycle validé.";
+      }
+
+      for (var i = 1; i <= 21; i++) {
+        var dEl = document.getElementById('dcell-' + i);
+        if (dEl) {
+          var cls = "py-1 rounded border border-gray-800 bg-black/40 text-gray-500 font-bold ";
+          if (i <= c) { dEl.className = cls + "day-done"; dEl.innerText = "J" + i + "✓"; }
+          else if (i === c + 1) { dEl.className = cls + "day-current"; dEl.innerText = "J" + i; }
+          else { dEl.className = cls; dEl.innerText = "J" + i; }
+        }
+      }
+    }
+
+    window.onload = function() {
+      loadQuest();
+      syncUI();
+    };
+  </script>
+</head>
+<body class="min-h-screen pb-14">
+
+  <!-- Header -->
+  <div class="sticky top-0 z-20 bg-[#0b0d12]/90 backdrop-blur-md border-b border-gray-800 px-4 py-3 flex justify-between items-center">
+    <div class="flex items-center gap-2">
+      <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+      <span class="text-xs tracking-widest text-gray-300 font-semibold uppercase">DDS Zero-Spiral • 0-9</span>
+    </div>
+    <span id="phaseBadge" class="text-[11px] mono bg-indigo-950/80 text-indigo-300 border border-indigo-600/60 px-2.5 py-1 rounded-full">
+      Φ = 180° (Point Zéro)
+    </span>
+  </div>
+
+  <div class="max-w-md mx-auto px-4 pt-4 space-y-4">
+
+    <!-- QUÊTE 21 JOURS (BOUCLE CYBERNÉTIQUE) -->
+    <div class="bg-[#131722] border border-gray-800 rounded-2xl p-4 shadow-lg">
+      <div class="flex justify-between items-start border-b border-gray-800 pb-3">
+        <div>
+          <span class="text-[10px] tracking-widest uppercase text-amber-400 font-bold">Potentiel Cristallisé (W)</span>
+          <div id="wealthDisplay" class="text-xl font-extrabold mono text-white mt-0.5">1 000 €</div>
+          <div id="phaseTitleDisplay" class="text-[11px] text-gray-400 mt-0.5">En attente du 1er Cycle d'ouverture</div>
+        </div>
+        <div class="text-right">
+          <span class="text-[10px] tracking-widest uppercase text-emerald-400 font-bold">Engramme</span>
+          <div id="cycleCountDisplay" class="text-lg font-extrabold mono text-emerald-400 mt-0.5">Cycle 0 / 21</div>
+          <div id="dailyDoseDisplay" class="text-[10px] mono text-gray-400 mt-0.5">Séances du jour : 0/2</div>
+        </div>
+      </div>
+
+      <div id="bioRuleBanner" class="mt-3 px-3 py-2 rounded-xl border border-teal-800/50 bg-teal-950/30 text-[11px] text-teal-200">
+        <span id="bioRuleText">🟢 Terrain prêt : 1 écoute complète (15m • Spirale 0→9) = +1 Cycle validé.</span>
+      </div>
+
+      <!-- Grille des 21 Jours -->
+      <div class="mt-3">
+        <div class="flex justify-between text-[10px] text-gray-400 mb-1.5 mono">
+          <span>J1-7: Purge</span><span>J8-14: Syntonisation</span><span>J15-21: Milliard</span>
+        </div>
+        <div class="grid grid-cols-7 gap-1 text-center mono text-[10px]">
+          <div id="dcell-1" class="py-1 rounded border day-current font-bold">J1</div>
+          <div id="dcell-2" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J2</div>
+          <div id="dcell-3" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J3</div>
+          <div id="dcell-4" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J4</div>
+          <div id="dcell-5" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J5</div>
+          <div id="dcell-6" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J6</div>
+          <div id="dcell-7" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J7</div>
+          <div id="dcell-8" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J8</div>
+          <div id="dcell-9" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J9</div>
+          <div id="dcell-10" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J10</div>
+          <div id="dcell-11" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J11</div>
+          <div id="dcell-12" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J12</div>
+          <div id="dcell-13" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J13</div>
+          <div id="dcell-14" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J14</div>
+          <div id="dcell-15" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J15</div>
+          <div id="dcell-16" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J16</div>
+          <div id="dcell-17" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J17</div>
+          <div id="dcell-18" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J18</div>
+          <div id="dcell-19" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J19</div>
+          <div id="dcell-20" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J20</div>
+          <div id="dcell-21" class="py-1 rounded border border-gray-800 bg-black/40 text-gray-500">J21</div>
+        </div>
+      </div>
+
+      <div class="mt-3 pt-2.5 border-t border-gray-800 flex justify-between items-center text-[10px]">
+        <button type="button" onclick="validateSession(true)" class="px-2.5 py-1 rounded bg-amber-500/10 border border-amber-500/40 text-amber-300 font-semibold active:scale-95">
+          ⚡ Simuler +1 Jour (Test Jeu)
+        </button>
+        <button type="button" onclick="resetQuest()" class="px-2 py-1 text-gray-400">
+          Réinitialiser 0/21
+        </button>
+      </div>
+    </div>
+
+    <!-- CONTRÔLE CENTRAL & BOUTON ACTIVER -->
+    <div class="bg-[#121620] border border-gray-800 rounded-2xl p-5 flex flex-col items-center relative">
+      <div class="relative w-32 h-32 flex items-center justify-center my-2">
+        <div id="breatheRing" class="breathe-ring absolute inset-0 rounded-full border-2 border-teal-400/60 bg-teal-500/10"></div>
+        <button id="playBtn" type="button" onclick="toggleAudio()" class="relative z-30 w-24 h-24 rounded-full bg-gradient-to-b from-amber-400 to-amber-600 text-black font-bold text-sm shadow-xl flex flex-col items-center justify-center active:scale-95">
+          <span id="playIcon" class="text-2xl leading-none">▶</span>
+          <span id="playText" class="text-[11px] font-extrabold tracking-wider uppercase mt-1">ACTIVER</span>
+        </button>
+      </div>
+
+      <div class="w-full mt-3 pt-3 border-t border-gray-800 flex justify-between items-center text-xs mono">
+        <div><span class="text-gray-500">G/D :</span> <span id="freqDisplay" class="text-amber-400 font-semibold">136.10 Hz (Zéro)</span></div>
+        <div><span class="text-gray-500">Cible :</span> <span id="beatDisplay" class="text-teal-400 font-bold">0.00 Hz</span></div>
+        <div id="timerDisplay" class="text-amber-300 font-bold text-base">15:00</div>
+      </div>
+
+      <div class="w-full mt-2.5 bg-gray-900 rounded-lg p-2.5 border border-gray-800 text-xs">
+        <div class="flex justify-between text-[11px] text-emerald-400 font-medium mb-1.5">
+          <span id="seqStepName">Prêt : Contenant Pyramidal 0 → 9</span>
+          <span id="seqStepIndex" class="mono">Phase 0/9</span>
+        </div>
+        <div class="w-full bg-gray-800 h-2 rounded-full overflow-hidden">
+          <div id="seqProgressBar" class="bg-emerald-500 h-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROTOCOLE 10 STATIONS (0 + 9) -->
+    <div id="card-seq" onclick="selectMode('sequence')" class="seq-active cursor-pointer bg-[#141822] border-2 border-gray-800 rounded-2xl p-4">
+      <div class="flex justify-between items-start">
+        <span class="text-[10px] font-bold uppercase bg-emerald-950 text-emerald-300 border border-emerald-700/50 px-2 py-0.5 rounded">0 + 9 = 10 Stations (900s)</span>
+        <span class="mono text-emerald-400 font-bold text-sm">0 ➔ Spirale ∞</span>
+      </div>
+      <h3 class="font-bold text-white text-base mt-2">Protocole Maître « Le Milliard »</h3>
+      <div class="grid grid-cols-1 gap-1.5 mt-2.5 text-[11px] mono text-gray-300">
+        <div id="step-row-0" onclick="jumpTo(event, 0)" class="step-active bg-black/40 px-2.5 py-1.5 rounded border border-indigo-900/60 flex justify-between">
+          <span><span class="text-indigo-400 font-bold">0.</span> <span class="text-indigo-300">0:00-0:30:</span> Point Zéro (Φ=180°)</span><span>136.10 Hz (Beat 0)</span>
+        </div>
+        <div id="step-row-1" onclick="jumpTo(event, 30)" class="bg-black/40 px-2.5 py-1.5 rounded border border-gray-800 flex justify-between">
+          <span><span class="text-teal-400 font-bold">1.</span> 0:30-2:00: Purge Beck (Φ=180°)</span><span>727.50 + 3.92 Hz</span>
+        </div>
+        <div id="step-row-2" onclick="jumpTo(event, 120)" class="bg-black/40 px-2.5 py-1.5 rounded border border-gray-800 flex justify-between">
+          <span><span class="text-teal-400 font-bold">2.</span> 2:00-3:30: Drainage CAFL (Φ=180°)</span><span>727.50 + 15.20 Hz</span>
+        </div>
+        <div id="step-row-3" onclick="jumpTo(event, 210)" class="bg-black/40 px-2.5 py-1.5 rounded border border-amber-900/60 flex justify-between">
+          <span><span class="text-amber-400 font-bold">3.</span> 3:30-5:00: Porte 3 (Ca2+ Soleil)</span><span>126.22 + 7.83➔10Hz</span>
+        </div>
+        <div id="step-row-4" onclick="jumpTo(event, 300)" class="bg-black/40 px-2.5 py-1.5 rounded border border-gray-800 flex justify-between">
+          <span><span class="text-amber-300 font-bold">4.</span> 5:00-6:30: Souveraineté & Foie</span><span>317.83 + 10.00 Hz</span>
+        </div>
+        <div id="step-row-5" onclick="jumpTo(event, 390)" class="bg-black/40 px-2.5 py-1.5 rounded border border-gray-800 flex justify-between">
+          <span><span class="text-purple-400 font-bold">5.</span> 6:30-8:00: Pinéale Paliers 1 & 2</span><span>480 ➔ 662 + 8.00 Hz</span>
+        </div>
+        <div id="step-row-6" onclick="jumpTo(event, 480)" class="bg-black/40 px-2.5 py-1.5 rounded border border-purple-900/60 flex justify-between">
+          <span><span class="text-purple-300 font-bold">6.</span> 8:00-9:30: Porte 6 (Sommet Pinéale)</span><span>936.00 + 8.00 Hz</span>
+        </div>
+        <div id="step-row-7" onclick="jumpTo(event, 570)" class="bg-black/40 px-2.5 py-1.5 rounded border border-gray-800 flex justify-between">
+          <span><span class="text-amber-300 font-bold">7.</span> 9:30-11:00: Témoin Or 197Au</span><span>316 ➔ 1729 + 7.83Hz</span>
+        </div>
+        <div id="step-row-8" onclick="jumpTo(event, 660)" class="bg-black/40 px-2.5 py-1.5 rounded border border-gray-800 flex justify-between">
+          <span><span class="text-emerald-400 font-bold">8.</span> 11:00-12:30: Expansion Jupiter</span><span>183.58 + 10.00 Hz</span>
+        </div>
+        <div id="step-row-9" onclick="jumpTo(event, 750)" class="bg-black/40 px-2.5 py-1.5 rounded border border-rose-900/60 flex justify-between">
+          <span><span class="text-rose-400 font-bold">9.</span> 12:30-15:00: Gamma ➔ Spirale Zéro</span><span>40Hz ➔ 136.1 (Φ=180°)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- PALIERS MANUELS -->
+    <div class="space-y-2">
+      <div class="text-[10px] uppercase tracking-wider text-gray-400 px-1">Modes Fixes (Démarrent par 30s Point Zéro)</div>
+      <div id="card-10" onclick="selectMode('10hz')" class="cursor-pointer bg-[#141822] border border-gray-800 rounded-2xl p-3">
+        <div class="flex justify-between"><span class="text-xs font-bold text-amber-300">Souveraineté & Foie</span><span class="mono text-amber-400 font-bold text-xs">10.00 Hz (317.83)</span></div>
+      </div>
+      <div id="card-8" onclick="selectMode('8hz')" class="cursor-pointer bg-[#141822] border border-gray-800 rounded-2xl p-3">
+        <div class="flex justify-between"><span class="text-xs font-bold text-teal-300">Clé Membranaire Ca2+</span><span class="mono text-teal-400 font-bold text-xs">7.83 Hz (126.22)</span></div>
+      </div>
+      <div id="card-40" onclick="selectMode('40hz')" class="cursor-pointer bg-[#141822] border border-gray-800 rounded-2xl p-3">
+        <div class="flex justify-between"><span class="text-xs font-bold text-purple-300">Jupiter + Gamma</span><span class="mono text-purple-400 font-bold text-xs">40.00 Hz (183.58)</span></div>
+      </div>
+      <div id="card-venus" onclick="selectMode('venus')" class="cursor-pointer bg-[#141822] border border-gray-800 rounded-2xl p-3">
+        <div class="flex justify-between"><span class="text-xs font-bold text-pink-400">Attraction Magnétique (Vénus)</span><span class="mono text-pink-500 font-bold text-xs">221.23 Hz</span></div>
+      </div>
+    </div>
+
+    <!-- OPTIONS & ARCHITECTURE SONORE -->
+    <div class="bg-[#141822] border border-gray-800 rounded-2xl p-4 space-y-3">
+      <div class="flex justify-between items-center">
+        <div>
+          <div class="text-xs font-semibold text-amber-300">Résonance Pyramide (Contenant)</div>
+          <div class="text-[10px] text-gray-400">Harmonique 2f + Cavité résonante 24ms</div>
+        </div>
+        <input type="checkbox" id="chamberToggle" checked onchange="updateChamber()" class="w-5 h-5 accent-amber-400">
+      </div>
+      <div class="flex justify-between items-center pt-2 border-t border-gray-800">
+        <div>
+          <div class="text-xs font-semibold text-emerald-300">Bords Terrestres Continus</div>
+          <div class="text-[10px] text-gray-400">Enveloppe 136.10 Hz + 7.83 Hz sur les flancs</div>
+        </div>
+        <input type="checkbox" id="earthToggle" checked onchange="updateEarth()" class="w-5 h-5 accent-emerald-400">
+      </div>
+      <div class="flex justify-between items-center pt-2 border-t border-gray-800">
+        <div>
+          <div class="text-xs font-semibold text-indigo-300">Résonance Spirale (Écho ∞)</div>
+          <div class="text-[10px] text-gray-400">Boucle de rétroaction 382ms filtrée</div>
+        </div>
+        <input type="checkbox" id="spiralToggle" checked onchange="updateSpiral()" class="w-5 h-5 accent-indigo-400">
+      </div>
+      <div class="flex justify-between items-center pt-2 border-t border-gray-800">
+        <div>
+          <div class="text-xs font-semibold text-white">Impulsion Cardiaque (0.10 Hz)</div>
+          <div class="text-[10px] text-gray-400">Onde orthogonale (Vertical/Horizontal)</div>
+        </div>
+        <input type="checkbox" id="breathToggle" checked onchange="updateBreath()" class="w-5 h-5 accent-teal-400">
+      </div>
+      <div class="flex justify-between items-center pt-2 border-t border-gray-800">
+        <div>
+          <div class="text-xs font-semibold text-white">Mode Enceinte (Isochrone)</div>
+          <div class="text-[10px] text-gray-400">Sans écouteurs • Coche aussi Harmoniques sur smartphone</div>
+        </div>
+        <input type="checkbox" id="isoToggle" onchange="updateIso()" class="w-5 h-5 accent-amber-400">
+      </div>
+      <div class="flex justify-between items-center pt-2 border-t border-gray-800">
+        <span class="text-xs font-semibold text-white">Harmoniques Supérieures (Rife/Schmidt)</span>
+        <input type="checkbox" id="harmonicToggle" onchange="updateWave()" class="w-5 h-5 accent-amber-400">
+      </div>
+      <div class="pt-2 border-t border-gray-800">
+        <div class="flex justify-between text-xs mb-1"><span class="text-gray-300">🔊 Intensité</span><span id="volLabel" class="mono text-amber-400">25% (Optimal)</span></div>
+        <input type="range" id="volSlider" min="1" max="100" value="25" oninput="updateVolume(this.value)" class="w-full accent-amber-400">
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
