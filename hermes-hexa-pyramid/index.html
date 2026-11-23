@@ -28,9 +28,12 @@
     // Bords Terrestres (136.1 + 7.83 Hz) + Boucle Spirale (382ms)
     var earthL = null, earthR = null, earthG = null;
     var delayNode = null, fbGain = null, fbFilter = null, wetG = null;
-    // Contenant Pyramidal (Harmonique 2f + Résonateur court 24ms)
-    var oscHarmL = null, oscHarmR = null, harmG = null;
+    // Contenant Pyramidal (Harmonique 2f avec inversion de phase + Résonateur court 24ms)
+    var oscHarmL = null, oscHarmR = null, harmInvG = null, harmG = null;
     var chamberDelay = null, chamberFilter = null, chamberFb = null, chamberWet = null;
+    // Fermeture du cercle : réalignement de phase au Point Zéro final (870s)
+    var coreMerger = null, harmMergerN = null, zeroFadeG = null, harmZeroFadeG = null;
+    var finalZeroDone = false, realignTimeoutId = null;
 
     var isPlaying = false, currentMode = 'sequence', elapsed = 0, totalDur = 900, timerId = null, lastTick = 0;
     var stopTimeoutId = null, wakeLock = null;
@@ -75,6 +78,75 @@
       '40hz':  { c: 183.58, b: 40.00, inv: false, tri: 'both', lbl: "✡ Sceau Gamma : Jupiter + 40 Hz (183.58 + 40 Hz)" },
       'venus': { c: 221.23, b: 10.00, inv: false, tri: 'up',   lbl: "🧲 Attraction Magnétique Vénus (221.23 + 10 Hz)" }
     };
+
+    function isFinalZero(t) {
+      return currentMode === 'sequence' && t.tri === 'zero' && t.row === 9;
+    }
+
+    // Point Zéro final : les 4 oscillateurs (Cœur + 2f) repartent ensemble => Φ=180° exact.
+    // Seuls le Cœur et le 2f s'effacent 0.1s ; les Bords Terrestres et la Spirale restent continus.
+    function realignZero() {
+      if (!audioCtx || !zeroFadeG || !harmZeroFadeG) return;
+      try {
+        var now = audioCtx.currentTime;
+        var fades = [zeroFadeG, harmZeroFadeG];
+        for (var i = 0; i < fades.length; i++) {
+          fades[i].gain.cancelScheduledValues(now);
+          fades[i].gain.setValueAtTime(fades[i].gain.value, now);
+          fades[i].gain.linearRampToValueAtTime(0.0, now + 0.1);
+        }
+        if (realignTimeoutId) clearTimeout(realignTimeoutId);
+        realignTimeoutId = setTimeout(function() {
+          realignTimeoutId = null;
+          if (!isPlaying || !audioCtx || !coreMerger || !harmMergerN || !invG || !harmInvG || !zeroFadeG || !harmZeroFadeG) return;
+          try {
+            var t = getTarget();
+            var isIso = document.getElementById('isoToggle').checked;
+            var targetR = isIso ? t.l : t.r;
+            var targetInv = isIso ? 1.0 : (t.inv ? -1.0 : 1.0);
+            var wType = document.getElementById('harmonicToggle').checked ? 'triangle' : 'sine';
+
+            var old = [oscL, oscR, oscHarmL, oscHarmR];
+            for (var k = 0; k < old.length; k++) {
+              if (old[k]) { try { old[k].stop(); old[k].disconnect(); } catch(e){} }
+            }
+
+            var t0 = audioCtx.currentTime + 0.02;
+            oscL = audioCtx.createOscillator();
+            oscR = audioCtx.createOscillator();
+            oscL.type = wType; oscR.type = wType;
+            oscL.frequency.setValueAtTime(Math.max(20, t.l), audioCtx.currentTime);
+            oscR.frequency.setValueAtTime(Math.max(20, targetR), audioCtx.currentTime);
+
+            oscHarmL = audioCtx.createOscillator();
+            oscHarmR = audioCtx.createOscillator();
+            oscHarmL.type = 'sine'; oscHarmR.type = 'sine';
+            oscHarmL.frequency.setValueAtTime(Math.max(40, t.l * 2.0), audioCtx.currentTime);
+            oscHarmR.frequency.setValueAtTime(Math.max(40, targetR * 2.0), audioCtx.currentTime);
+
+            invG.gain.cancelScheduledValues(audioCtx.currentTime);
+            invG.gain.setValueAtTime(targetInv, audioCtx.currentTime);
+            harmInvG.gain.cancelScheduledValues(audioCtx.currentTime);
+            harmInvG.gain.setValueAtTime(targetInv, audioCtx.currentTime);
+
+            oscL.connect(coreMerger, 0, 0);
+            oscR.connect(invG);
+            oscHarmL.connect(harmMergerN, 0, 0);
+            oscHarmR.connect(harmInvG);
+
+            oscL.start(t0); oscR.start(t0);
+            oscHarmL.start(t0); oscHarmR.start(t0);
+
+            var fd = [zeroFadeG, harmZeroFadeG];
+            for (var j = 0; j < fd.length; j++) {
+              fd[j].gain.cancelScheduledValues(t0);
+              fd[j].gain.setValueAtTime(0.0, t0);
+              fd[j].gain.linearRampToValueAtTime(1.0, t0 + 0.1);
+            }
+          } catch(e) {}
+        }, 120);
+      } catch(e) {}
+    }
 
     function getTarget() {
       if (currentMode === 'sequence') {
@@ -179,17 +251,19 @@
 
     function killOsc() {
       if (stopTimeoutId) { clearTimeout(stopTimeoutId); stopTimeoutId = null; }
+      if (realignTimeoutId) { clearTimeout(realignTimeoutId); realignTimeoutId = null; }
       var nodes = [oscL, oscR, lfoB, isoLfo, earthL, earthR, oscHarmL, oscHarmR];
       for (var i = 0; i < nodes.length; i++) {
         if (nodes[i]) { try { nodes[i].stop(); nodes[i].disconnect(); } catch(e){} }
       }
-      var gains = [lfoG, isoLfoG, isoG, invG, masterG, fadeG, earthG, delayNode, fbGain, fbFilter, wetG, harmG, chamberDelay, chamberFilter, chamberFb, chamberWet];
+      var gains = [lfoG, isoLfoG, isoG, invG, masterG, fadeG, earthG, delayNode, fbGain, fbFilter, wetG, harmInvG, harmG, chamberDelay, chamberFilter, chamberFb, chamberWet, coreMerger, harmMergerN, zeroFadeG, harmZeroFadeG];
       for (var j = 0; j < gains.length; j++) {
         if (gains[j]) { try { gains[j].disconnect(); } catch(e){} }
       }
       oscL = oscR = lfoB = lfoG = isoLfo = isoLfoG = isoG = invG = masterG = fadeG = null;
       earthL = earthR = earthG = delayNode = fbGain = fbFilter = wetG = null;
-      oscHarmL = oscHarmR = harmG = chamberDelay = chamberFilter = chamberFb = chamberWet = null;
+      oscHarmL = oscHarmR = harmInvG = harmG = chamberDelay = chamberFilter = chamberFb = chamberWet = null;
+      coreMerger = harmMergerN = zeroFadeG = harmZeroFadeG = null;
       lastL = null; lastR = null; lastB = null; lastInv = null; lastIso = null;
     }
 
@@ -223,6 +297,7 @@
 
         // 1. CŒUR HEXAGRAMME (0 -> 9 : Solve ▼ × Coagula ▲)
         var merger = audioCtx.createChannelMerger(2);
+        coreMerger = merger;
         oscL = audioCtx.createOscillator();
         oscR = audioCtx.createOscillator();
         var wType = document.getElementById('harmonicToggle').checked ? 'triangle' : 'sine';
@@ -232,6 +307,7 @@
         var t = getTarget();
         var targetR = isIso ? t.l : t.r;
         var targetInv = isIso ? 1.0 : (t.inv ? -1.0 : 1.0);
+        finalZeroDone = isFinalZero(t);
 
         oscL.frequency.setValueAtTime(Math.max(20, t.l), now);
         oscR.frequency.setValueAtTime(Math.max(20, targetR), now);
@@ -255,11 +331,15 @@
         oscL.connect(merger, 0, 0);
         oscR.connect(invG);
         invG.connect(merger, 0, 1);
-        merger.connect(isoG);
+        zeroFadeG = audioCtx.createGain();
+        zeroFadeG.gain.setValueAtTime(1.0, now);
+        merger.connect(zeroFadeG);
+        zeroFadeG.connect(isoG);
         isoG.connect(masterG);
 
-        // 2. CONTENANT PYRAMIDAL (Harmonique 2f + Cavité résonante 24ms)
+        // 2. CONTENANT PYRAMIDAL (Harmonique 2f avec inversion de phase + Cavité résonante 24ms)
         var harmMerger = audioCtx.createChannelMerger(2);
+        harmMergerN = harmMerger;
         oscHarmL = audioCtx.createOscillator();
         oscHarmR = audioCtx.createOscillator();
         oscHarmL.type = 'sine';
@@ -267,12 +347,19 @@
         oscHarmL.frequency.setValueAtTime(Math.max(40, t.l * 2.0), now);
         oscHarmR.frequency.setValueAtTime(Math.max(40, targetR * 2.0), now);
 
+        harmInvG = audioCtx.createGain();
+        harmInvG.gain.setValueAtTime(targetInv, now);
+
         harmG = audioCtx.createGain();
         harmG.gain.setValueAtTime(chamberOn ? 0.14 : 0.0, now);
 
         oscHarmL.connect(harmMerger, 0, 0);
-        oscHarmR.connect(harmMerger, 0, 1);
-        harmMerger.connect(harmG);
+        oscHarmR.connect(harmInvG);
+        harmInvG.connect(harmMerger, 0, 1);
+        harmZeroFadeG = audioCtx.createGain();
+        harmZeroFadeG.gain.setValueAtTime(1.0, now);
+        harmMerger.connect(harmZeroFadeG);
+        harmZeroFadeG.connect(harmG);
         harmG.connect(masterG);
 
         chamberDelay = audioCtx.createDelay(0.2);
@@ -442,6 +529,9 @@
         document.getElementById('seqProgressBar').style.width = elapsed < 30 ? ((elapsed / 30) * 100) + '%' : '100%';
       }
 
+      var finalZ = isFinalZero(t);
+      if (!finalZ) finalZeroDone = false;
+
       if (isPlaying && oscL && oscR && audioCtx) {
         if (t.l !== lastL || t.r !== lastR || t.b !== lastB || t.inv !== lastInv || isIso !== lastIso) {
           try {
@@ -451,32 +541,43 @@
             var targetInv = isIso ? 1.0 : (t.inv ? -1.0 : 1.0);
             var isoActive = isIso && t.b > 0;
 
-            oscL.frequency.cancelScheduledValues(now);
-            oscL.frequency.setValueAtTime(oscL.frequency.value, now);
-            oscL.frequency.linearRampToValueAtTime(Math.max(20, t.l), now + ramp);
-
-            oscR.frequency.cancelScheduledValues(now);
-            oscR.frequency.setValueAtTime(oscR.frequency.value, now);
-            oscR.frequency.linearRampToValueAtTime(Math.max(20, targetR), now + ramp);
-
-            if (oscHarmL && oscHarmR) {
-              oscHarmL.frequency.cancelScheduledValues(now);
-              oscHarmL.frequency.setValueAtTime(oscHarmL.frequency.value, now);
-              oscHarmL.frequency.linearRampToValueAtTime(Math.max(40, t.l * 2.0), now + ramp);
-
-              oscHarmR.frequency.cancelScheduledValues(now);
-              oscHarmR.frequency.setValueAtTime(oscHarmR.frequency.value, now);
-              oscHarmR.frequency.linearRampToValueAtTime(Math.max(40, targetR * 2.0), now + ramp);
-            }
-
             if (earthR) {
               earthR.frequency.setTargetAtTime(isIso ? 136.10 : 143.93, now, 0.1);
             }
 
-            if (invG) {
-              invG.gain.cancelScheduledValues(now);
-              invG.gain.setValueAtTime(invG.gain.value, now);
-              invG.gain.linearRampToValueAtTime(targetInv, now + 0.25);
+            if (finalZ && !finalZeroDone) {
+              finalZeroDone = true;
+              realignZero();
+            } else {
+              oscL.frequency.cancelScheduledValues(now);
+              oscL.frequency.setValueAtTime(oscL.frequency.value, now);
+              oscL.frequency.linearRampToValueAtTime(Math.max(20, t.l), now + ramp);
+
+              oscR.frequency.cancelScheduledValues(now);
+              oscR.frequency.setValueAtTime(oscR.frequency.value, now);
+              oscR.frequency.linearRampToValueAtTime(Math.max(20, targetR), now + ramp);
+
+              if (oscHarmL && oscHarmR) {
+                oscHarmL.frequency.cancelScheduledValues(now);
+                oscHarmL.frequency.setValueAtTime(oscHarmL.frequency.value, now);
+                oscHarmL.frequency.linearRampToValueAtTime(Math.max(40, t.l * 2.0), now + ramp);
+
+                oscHarmR.frequency.cancelScheduledValues(now);
+                oscHarmR.frequency.setValueAtTime(oscHarmR.frequency.value, now);
+                oscHarmR.frequency.linearRampToValueAtTime(Math.max(40, targetR * 2.0), now + ramp);
+              }
+
+              if (invG) {
+                invG.gain.cancelScheduledValues(now);
+                invG.gain.setValueAtTime(invG.gain.value, now);
+                invG.gain.linearRampToValueAtTime(targetInv, now + 0.25);
+              }
+
+              if (harmInvG) {
+                harmInvG.gain.cancelScheduledValues(now);
+                harmInvG.gain.setValueAtTime(harmInvG.gain.value, now);
+                harmInvG.gain.linearRampToValueAtTime(targetInv, now + 0.25);
+              }
             }
 
             if (isoLfo) {
@@ -896,7 +997,7 @@
       <div class="flex justify-between items-center">
         <div>
           <div class="text-xs font-semibold text-amber-300">Contenant Pyramidal (Condensateur)</div>
-          <div class="text-[10px] text-gray-400">Harmonique 2f + Cavité résonante 24ms</div>
+          <div class="text-[10px] text-gray-400">Harmonique 2f (Phase alignée) + Cavité résonante 24ms</div>
         </div>
         <input type="checkbox" id="chamberToggle" checked onchange="updateChamber()" class="w-5 h-5 accent-amber-400">
       </div>
